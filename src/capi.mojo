@@ -6,7 +6,6 @@ rules beyond the call.
 """
 
 from std.sys import simd_width_of
-from std.algorithm.functional import parallelize
 
 comptime FPtr = UnsafePointer[Float64, AnyOrigin[mut=True]]
 comptime IPtr = UnsafePointer[Int64, AnyOrigin[mut=True]]
@@ -58,25 +57,12 @@ def mgt_pagerank(
         for source in range(n):
             if out_strength[source] == 0.0:
                 dangling += rank[source]
-        if n >= 65536:
-            @parameter
-            def update_chunk(chunk: Int):
-                var start = chunk * n // 32
-                var stop = (chunk + 1) * n // 32
-                for vertex in range(start, stop):
-                    var value = (1.0 - damping) * pers[vertex] + damping * dangling * pers[vertex]
-                    for slot in range(Int(offsets[vertex]), Int(offsets[vertex + 1])):
-                        var source = Int(incoming[slot])
-                        value += damping * rank[source] * weight[slot] / out_strength[source]
-                    scratch[vertex] = value
-            parallelize[update_chunk](32, 4)
-        else:
-            for vertex in range(n):
-                var value = (1.0 - damping) * pers[vertex] + damping * dangling * pers[vertex]
-                for slot in range(Int(offsets[vertex]), Int(offsets[vertex + 1])):
-                    var source = Int(incoming[slot])
-                    value += damping * rank[source] * weight[slot] / out_strength[source]
-                scratch[vertex] = value
+        for vertex in range(n):
+            var value = (1.0 - damping) * pers[vertex] + damping * dangling * pers[vertex]
+            for slot in range(Int(offsets[vertex]), Int(offsets[vertex + 1])):
+                var source = Int(incoming[slot])
+                value += damping * rank[source] * weight[slot] / out_strength[source]
+            scratch[vertex] = value
         comptime W = simd_width_of[DType.float64]()
         var error = 0.0
         var vector_end = n - n % W
