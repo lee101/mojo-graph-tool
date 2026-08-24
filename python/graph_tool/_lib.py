@@ -15,11 +15,12 @@ I = ctypes.c_int64
 F = ctypes.c_double
 
 _SIGNATURES = {
-    "mgt_pagerank": ([I, I, I, I, I, I, I, I, F, F, I], I),
+    "mgt_pagerank": ([I, I, I, I, I, I, I, I, I, I, F, F, I], I),
     "mgt_bfs": ([I, I, I, I, I, I, I], I),
     "mgt_components": ([I, I, I, I, I], I),
     "mgt_kcore": ([I, I, I, I, I, I, I, I], None),
     "mgt_local_clustering": ([I, I, I, I, I], F),
+    "mgt_local_clustering_range": ([I, I, I, I, I, I], None),
 }
 
 

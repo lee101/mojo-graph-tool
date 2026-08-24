@@ -24,8 +24,10 @@ def pagerank(g, damping: float = 0.85, pers=None, weight=None, prop=None,
         return (result, 0) if ret_iter else result
     in_offsets, incoming, weights = g._csr("in", weight)
     out_offsets, _, out_weights = g._csr("out", weight)
-    out_strength = np.zeros(n, dtype=np.float64)
-    if out_weights.size:
+    if weight is None:
+        out_strength = np.diff(out_offsets).astype(np.float64)
+    else:
+        out_strength = np.zeros(n, dtype=np.float64)
         owners = np.repeat(np.arange(n), np.diff(out_offsets))
         np.add.at(out_strength, owners, out_weights)
     if pers is None:
@@ -48,7 +50,9 @@ def pagerank(g, damping: float = 0.85, pers=None, weight=None, prop=None,
         personalization /= personalization.sum()
     result_array[:] = 1.0 / n
     scratch = np.empty(n, dtype=np.float64)
+    contribution = np.empty(n, dtype=np.float64)
     iterations = lib().mgt_pagerank(address(in_offsets), address(incoming), address(weights),
                                    address(out_strength), address(personalization), address(result_array),
-                                   address(scratch), n, damping, float(epsilon), int(max_iter or 0))
+                                   address(scratch), address(contribution), n, int(weight is not None),
+                                   damping, float(epsilon), int(max_iter or 0))
     return (result, iterations) if ret_iter else result

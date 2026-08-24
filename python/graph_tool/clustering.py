@@ -2,10 +2,33 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 
 from ._lib import address, lib
 from .core import require_vertex_property
+
+
+_PARALLEL_THRESHOLD = 8_192
+_PARALLEL_WORKERS = 16
+_EXECUTOR = ThreadPoolExecutor(max_workers=_PARALLEL_WORKERS)
+
+
+def _count_triangles(offsets, neighbors, triangles, local):
+    n = local.size
+    native = lib()
+    args = (address(offsets), address(neighbors), address(triangles), address(local))
+    if n < _PARALLEL_THRESHOLD:
+        native.mgt_local_clustering_range(*args, 0, n)
+        return
+    chunk = (n + _PARALLEL_WORKERS - 1) // _PARALLEL_WORKERS
+    futures = [
+        _EXECUTOR.submit(native.mgt_local_clustering_range, *args, first, min(first + chunk, n))
+        for first in range(0, n, chunk)
+    ]
+    for future in futures:
+        future.result()
 
 
 def local_clustering(g, undirected: bool | None = None, c=None):
@@ -15,8 +38,7 @@ def local_clustering(g, undirected: bool | None = None, c=None):
     result = g.new_vertex_property("double") if c is None else c
     result_array = require_vertex_property(result, g, np.dtype(np.float64), "c")
     triangles = np.empty(g.num_vertices(), dtype=np.int64)
-    lib().mgt_local_clustering(address(offsets), address(neighbors), address(triangles),
-                               address(result_array), g.num_vertices())
+    _count_triangles(offsets, neighbors, triangles, result_array)
     return result
 
 
@@ -32,13 +54,13 @@ def global_clustering(g, weight=None, ret_counts: bool = False, sampled: bool = 
     offsets, neighbors = g._csr("undirected", simple=True)
     triangles = np.empty(g.num_vertices(), dtype=np.int64)
     local = np.empty(g.num_vertices(), dtype=np.float64)
-    coefficient = lib().mgt_local_clustering(address(offsets), address(neighbors), address(triangles),
-                                              address(local), g.num_vertices())
+    _count_triangles(offsets, neighbors, triangles, local)
     degrees = np.diff(offsets)
     wedge_per_vertex = degrees * (degrees - 1) // 2
     triangle_per_vertex = local * wedge_per_vertex
     wedges = int(wedge_per_vertex.sum())
     triangles_total = float(triangle_per_vertex.sum())
+    coefficient = triangles_total / wedges if wedges else 0.0
     error2 = 0.0
     if wedges:
         for triangles, vertex_wedges in zip(triangle_per_vertex, wedge_per_vertex):

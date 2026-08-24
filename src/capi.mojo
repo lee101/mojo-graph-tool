@@ -11,25 +11,6 @@ comptime FPtr = UnsafePointer[Float64, AnyOrigin[mut=True]]
 comptime IPtr = UnsafePointer[Int64, AnyOrigin[mut=True]]
 
 
-def comes_before(offsets: IPtr, left: Int, right: Int) -> Bool:
-    var left_degree = Int(offsets[left + 1] - offsets[left])
-    var right_degree = Int(offsets[right + 1] - offsets[right])
-    return left_degree < right_degree or (left_degree == right_degree and left < right)
-
-
-def has_edge(offsets: IPtr, neighbors: IPtr, vertex: Int, target: Int) -> Bool:
-    var lo = Int(offsets[vertex])
-    var hi = Int(offsets[vertex + 1])
-    while lo < hi:
-        var mid = (lo + hi) // 2
-        var value = Int(neighbors[mid])
-        if value < target:
-            lo = mid + 1
-        else:
-            hi = mid
-    return lo < Int(offsets[vertex + 1]) and Int(neighbors[lo]) == target
-
-
 @export("mgt_pagerank")
 def mgt_pagerank(
     offsets_addr: Int,
@@ -39,7 +20,9 @@ def mgt_pagerank(
     pers_addr: Int,
     rank_addr: Int,
     scratch_addr: Int,
+    contribution_addr: Int,
     n: Int,
+    weighted: Int,
     damping: Float64,
     epsilon: Float64,
     max_iter: Int,
@@ -51,21 +34,53 @@ def mgt_pagerank(
     var pers = FPtr(unsafe_from_address=pers_addr)
     var rank = FPtr(unsafe_from_address=rank_addr)
     var scratch = FPtr(unsafe_from_address=scratch_addr)
+    var contribution = FPtr(unsafe_from_address=contribution_addr)
     var iterations = max_iter if max_iter > 0 else 1000
+    comptime W = simd_width_of[DType.float64]()
+    var vector_end = n - n % W
     for step in range(iterations):
         var dangling = 0.0
-        for source in range(n):
-            if out_strength[source] == 0.0:
+        for source in range(0, vector_end, W):
+            var strengths = out_strength.load[width=W](source)
+            var ranks = rank.load[width=W](source)
+            var dangling_mask = strengths.eq(0.0)
+            dangling += dangling_mask.select(ranks, 0.0).reduce_add()
+            var denominators = dangling_mask.select(1.0, strengths)
+            contribution.store(
+                source,
+                dangling_mask.select(0.0, damping * ranks / denominators),
+            )
+        for source in range(vector_end, n):
+            var strength = out_strength[source]
+            if strength == 0.0:
                 dangling += rank[source]
-        for vertex in range(n):
+                contribution[source] = 0.0
+            else:
+                contribution[source] = damping * rank[source] / strength
+
+        @parameter
+        def update_weighted_vertex(vertex: Int):
             var value = (1.0 - damping) * pers[vertex] + damping * dangling * pers[vertex]
             for slot in range(Int(offsets[vertex]), Int(offsets[vertex + 1])):
                 var source = Int(incoming[slot])
-                value += damping * rank[source] * weight[slot] / out_strength[source]
+                value += contribution[source] * weight[slot]
             scratch[vertex] = value
-        comptime W = simd_width_of[DType.float64]()
+
+        @parameter
+        def update_unweighted_vertex(vertex: Int):
+            var value = (1.0 - damping) * pers[vertex] + damping * dangling * pers[vertex]
+            for slot in range(Int(offsets[vertex]), Int(offsets[vertex + 1])):
+                value += contribution[Int(incoming[slot])]
+            scratch[vertex] = value
+
+        if weighted:
+            for vertex in range(n):
+                update_weighted_vertex(vertex)
+        else:
+            for vertex in range(n):
+                update_unweighted_vertex(vertex)
+
         var error = 0.0
-        var vector_end = n - n % W
         for vertex in range(0, vector_end, W):
             var values = scratch.load[width=W](vertex)
             error += abs(values - rank.load[width=W](vertex)).reduce_add()
@@ -198,6 +213,62 @@ def mgt_kcore(
                 degree[neighbor] -= 1
 
 
+def count_clustering_range(
+    offsets: IPtr,
+    neighbors: IPtr,
+    triangle: IPtr,
+    local: FPtr,
+    first: Int,
+    last: Int,
+):
+    for vertex in range(first, last):
+        var start = Int(offsets[vertex])
+        var stop = Int(offsets[vertex + 1])
+        var degree = stop - start
+        if degree < 2:
+            triangle[vertex] = 0
+            local[vertex] = 0.0
+            return
+        var count = 0
+        for edge_slot in range(start, stop - 1):
+            var neighbor = Int(neighbors[edge_slot])
+            var left = edge_slot + 1
+            var right = Int(offsets[neighbor])
+            var right_stop = Int(offsets[neighbor + 1])
+            while left < stop and right < right_stop:
+                var left_neighbor = Int(neighbors[left])
+                var right_neighbor = Int(neighbors[right])
+                if left_neighbor < right_neighbor:
+                    left += 1
+                elif left_neighbor > right_neighbor:
+                    right += 1
+                else:
+                    count += 1
+                    left += 1
+                    right += 1
+        triangle[vertex] = Int64(count)
+        local[vertex] = Float64(2 * count) / Float64(degree * (degree - 1))
+
+
+@export("mgt_local_clustering_range")
+def mgt_local_clustering_range(
+    offsets_addr: Int,
+    neighbors_addr: Int,
+    triangle_addr: Int,
+    local_addr: Int,
+    first: Int,
+    last: Int,
+) abi("C"):
+    count_clustering_range(
+        IPtr(unsafe_from_address=offsets_addr),
+        IPtr(unsafe_from_address=neighbors_addr),
+        IPtr(unsafe_from_address=triangle_addr),
+        FPtr(unsafe_from_address=local_addr),
+        first,
+        last,
+    )
+
+
 @export("mgt_local_clustering")
 def mgt_local_clustering(
     offsets_addr: Int, neighbors_addr: Int, triangle_addr: Int, local_addr: Int, n: Int,
@@ -206,50 +277,14 @@ def mgt_local_clustering(
     var neighbors = IPtr(unsafe_from_address=neighbors_addr)
     var triangle = IPtr(unsafe_from_address=triangle_addr)
     var local = FPtr(unsafe_from_address=local_addr)
+    count_clustering_range(offsets, neighbors, triangle, local, 0, n)
+
     var closed = 0.0
     var wedges = 0.0
     for vertex in range(n):
-        triangle[vertex] = 0
-    for vertex in range(n):
         var start = Int(offsets[vertex])
         var stop = Int(offsets[vertex + 1])
         var degree = stop - start
-        if degree < 2:
-            continue
-        for edge_slot in range(start, stop):
-            var neighbor = Int(neighbors[edge_slot])
-            if not comes_before(offsets, vertex, neighbor):
-                continue
-            var left = start
-            var right = Int(offsets[neighbor])
-            var right_stop = Int(offsets[neighbor + 1])
-            while left < stop and right < right_stop:
-                var left_neighbor = Int(neighbors[left])
-                if not comes_before(offsets, vertex, left_neighbor):
-                    left += 1
-                    continue
-                var right_neighbor = Int(neighbors[right])
-                if not comes_before(offsets, neighbor, right_neighbor):
-                    right += 1
-                    continue
-                if left_neighbor < right_neighbor:
-                    left += 1
-                elif left_neighbor > right_neighbor:
-                    right += 1
-                else:
-                    triangle[vertex] += 1
-                    triangle[neighbor] += 1
-                    triangle[left_neighbor] += 1
-                    left += 1
-                    right += 1
-    for vertex in range(n):
-        var start = Int(offsets[vertex])
-        var stop = Int(offsets[vertex + 1])
-        var degree = stop - start
-        if degree < 2:
-            local[vertex] = 0.0
-            continue
-        local[vertex] = Float64(2 * Int(triangle[vertex])) / Float64(degree * (degree - 1))
         closed += Float64(triangle[vertex])
         wedges += Float64(degree * (degree - 1) // 2)
     return closed / wedges if wedges > 0.0 else 0.0

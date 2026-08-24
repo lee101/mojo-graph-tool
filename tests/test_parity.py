@@ -44,7 +44,7 @@ def test_pagerank_known_published_cycle_vector():
     assert centrality.pagerank(g, epsilon=1e-14).a == pytest.approx([1 / 3] * 3, abs=1e-14)
 
 
-def test_pagerank_simd_tail_and_parallel_threshold():
+def test_pagerank_simd_tail_and_large_input():
     tail = graph([(i, (i + 1) % 17) for i in range(17)], 17)
     assert centrality.pagerank(tail, epsilon=1e-14).a == pytest.approx([1 / 17] * 17, abs=1e-14)
     n = 65_536
@@ -102,6 +102,13 @@ def test_clustering_triangle_with_tail():
     g = graph([(0, 1), (1, 2), (2, 0), (0, 3)], 4, directed=False)
     assert clustering.local_clustering(g).a == pytest.approx([1 / 3, 1.0, 1.0, 0.0])
     assert clustering.global_clustering(g) == pytest.approx((0.6, np.sqrt(0.18)))
+
+
+def test_clustering_parallel_threshold_with_sparse_tail():
+    g = graph([(0, 1), (1, 2), (2, 0), (0, 3)], 8_193, directed=False)
+    result = clustering.local_clustering(g).a
+    assert result[:4] == pytest.approx([1 / 3, 1.0, 1.0, 0.0])
+    assert np.count_nonzero(result[4:]) == 0
 
 
 def test_statistics_histograms_and_moments_match_numpy():

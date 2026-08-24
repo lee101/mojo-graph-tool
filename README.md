@@ -64,7 +64,11 @@ buffers as integer addresses over a C ABI; it rebuilds typed pointers internally
 using `AnyOrigin[mut=True]`. The caller owns every output and scratch array, so
 there is no native allocation or cross-language lifetime to manage. PageRank
 uses incoming CSR plus outgoing strengths; BFS/components use queue scratch;
-clustering intersects sorted neighbour rows; k-core uses exact degree peeling.
+clustering counts each vertex's triangles by intersecting sorted neighbour rows;
+k-core uses exact degree peeling. PageRank precomputes source contributions and
+uses SIMD for its dense update/reduction passes. Large clustering calls split
+independent vertex ranges across a persistent host thread pool, while smaller
+calls stay serial to avoid launch overhead.
 
 ## Validation
 
@@ -73,20 +77,19 @@ complete-graph/cycle vectors. It also launches the installed conda-forge
 `graph-tool` 3.6 in a clean subprocess and compares PageRank, local/global
 clustering, and k-core results directly. It includes FFI boundary tests for
 foreign, non-contiguous, incorrectly typed, and lossy buffers. The current
-suite has 17 tests.
+suite has 18 tests.
 
 ## Benchmark
 
 Measured with `pixi run bench` on `Linux-6.8.0-136-generic-x86_64-with-glibc2.39`,
 Python 3.13.14, comparing complete public API calls against conda-forge
-graph-tool 3.6. Times are the best of three runs; graph-tool's mature parallel
-C++ implementation remains faster on PageRank and local clustering.
+graph-tool 3.6. Times are the best of three runs.
 
 | Kernel | Mojo port | graph-tool 3.6 | Speedup |
 |---|---:|---:|---:|
-| PageRank (30,000 vertices, 300,000 arcs) | 21.25 ms | 8.80 ms | 0.41x |
-| local_clustering (12,000 vertices, 100,000 edges) | 36.00 ms | 18.36 ms | 0.51x |
-| kcore_decomposition (3,000 vertices, 18,000 edges) | 0.29 ms | 0.39 ms | 1.37x |
+| PageRank (30,000 vertices, 300,000 arcs) | 8.56 ms | 7.20 ms | 0.84x |
+| local_clustering (12,000 vertices, 100,000 edges) | 2.89 ms | 2.12 ms | 0.73x |
+| kcore_decomposition (3,000 vertices, 18,000 edges) | 0.26 ms | 0.39 ms | 1.49x |
 
 These kernels are sparse, memory-bound, and branch-heavy: their arithmetic
 intensity is below the threshold where host/device transfers can pay for a GPU
