@@ -41,8 +41,8 @@ def mgt_pagerank(
     for step in range(iterations):
         var dangling = 0.0
         for source in range(0, vector_end, W):
-            var strengths = out_strength.load[width=W](source)
-            var ranks = rank.load[width=W](source)
+            var strengths = out_strength.unsafe_load[width=W](source)
+            var ranks = rank.unsafe_load[width=W](source)
             var dangling_mask = strengths.eq(0.0)
             dangling += dangling_mask.select(ranks, 0.0).reduce_add()
             var denominators = dangling_mask.select(1.0, strengths)
@@ -82,8 +82,8 @@ def mgt_pagerank(
 
         var error = 0.0
         for vertex in range(0, vector_end, W):
-            var values = scratch.load[width=W](vertex)
-            error += abs(values - rank.load[width=W](vertex)).reduce_add()
+            var values = scratch.unsafe_load[width=W](vertex)
+            error += abs(values - rank.unsafe_load[width=W](vertex)).reduce_add()
             rank.store(vertex, values)
         for vertex in range(vector_end, n):
             var value = scratch[vertex]
